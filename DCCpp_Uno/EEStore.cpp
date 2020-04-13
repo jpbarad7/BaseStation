@@ -12,7 +12,11 @@ Part of DCC++ BASE STATION for the Arduino
 #include "Accessories.h"
 #include "Sensor.h"
 #include "Outputs.h"
-#include <EEPROM.h>
+#ifdef ARDUINO_SAM_DUE
+  #include "DUESupport.h"
+#else
+  #include <EEPROM.h>
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////
 

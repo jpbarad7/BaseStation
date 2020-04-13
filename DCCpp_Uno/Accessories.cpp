@@ -63,7 +63,12 @@ the directions of any Turnouts being monitored or controlled by a separate inter
 #include "SerialCommand.h"
 #include "DCCpp_Uno.h"
 #include "EEStore.h"
-#include <EEPROM.h>
+#ifdef ARDUINO_SAM_DUE
+  #include "DUESupport.h"
+#else
+  #include <EEPROM.h>
+#endif
+
 #include "Comm.h"
 
 ///////////////////////////////////////////////////////////////////////////////

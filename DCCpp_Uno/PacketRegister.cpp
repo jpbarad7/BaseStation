@@ -43,9 +43,9 @@ RegisterList::RegisterList(int maxNumRegs){
 
 void RegisterList::loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int printFlag) volatile {
   
-  nReg=nReg%((maxNumRegs+1));          // force nReg to be between 0 and maxNumRegs, inclusive
+  nReg=nReg%((maxNumRegs+1));         // force nReg to be between 0 and maxNumRegs, inclusive
 
-  while(nextReg!=NULL);              // pause while there is a Register already waiting to be updated -- nextReg will be reset to NULL by interrupt when prior Register updated fully processed
+  while(nextReg!=NULL);               // pause while there is a Register already waiting to be updated -- nextReg will be reset to NULL by interrupt when prior Register updated fully processed
  
   if(regMap[nReg]==NULL)              // first time this Register Number has been called
    regMap[nReg]=maxLoadedReg+1;       // set Register Pointer for this Register Number to next available Register
@@ -214,13 +214,13 @@ void RegisterList::readCV(char *s) volatile{
 
   if(sscanf(s,"%d %d %d",&cv,&callBack,&callBackSub)!=3)          // cv = 1-1024
     return;    
-  cv--;                              // actual CV addresses are cv-1 (0-1023)
+  cv--;                                // actual CV addresses are cv-1 (0-1023)
   
   bRead[0]=0x78+(highByte(cv)&0x03);   // any CV>1023 will become modulus(1024) due to bit-mask of 0x03
   bRead[1]=lowByte(cv);
   
   bValue=0;
-  
+
   for(int i=0;i<8;i++){
     
     c=0;
@@ -238,14 +238,15 @@ void RegisterList::readCV(char *s) volatile{
     loadPacket(0,resetPacket,2,1);          // forces code to wait until all repeats of bRead are completed (and decoder begins to respond)
 
     for(int j=0;j<ACK_SAMPLE_COUNT;j++){
-      c=(analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
+      c=((float) analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
       if(c>ACK_SAMPLE_THRESHOLD)
         d=1;
+      delayMicroseconds(ACK_DELAY);
     }
 
     bitWrite(bValue,i,d);
   }
-    
+
   c=0;
   d=0;
   base=0;
@@ -262,9 +263,10 @@ void RegisterList::readCV(char *s) volatile{
   loadPacket(0,resetPacket,2,1);          // forces code to wait until all repeats of bRead are completed (and decoder begins to respond)
     
   for(int j=0;j<ACK_SAMPLE_COUNT;j++){
-    c=(analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
+    c=((float) analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
     if(c>ACK_SAMPLE_THRESHOLD)
       d=1;
+    delayMicroseconds(ACK_DELAY);
   }
     
   if(d==0)    // verify unsuccessful
@@ -292,7 +294,7 @@ void RegisterList::writeCVByte(char *s) volatile{
 
   if(sscanf(s,"%d %d %d %d",&cv,&bValue,&callBack,&callBackSub)!=4)          // cv = 1-1024
     return;    
-  cv--;                              // actual CV addresses are cv-1 (0-1023)
+  cv--;                                 // actual CV addresses are cv-1 (0-1023)
   
   bWrite[0]=0x7C+(highByte(cv)&0x03);   // any CV>1023 will become modulus(1024) due to bit-mask of 0x03
   bWrite[1]=lowByte(cv);
@@ -318,9 +320,10 @@ void RegisterList::writeCVByte(char *s) volatile{
   loadPacket(0,resetPacket,2,1);          // forces code to wait until all repeats of bRead are completed (and decoder begins to respond)
     
   for(int j=0;j<ACK_SAMPLE_COUNT;j++){
-    c=(analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
+    c=((float) analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
     if(c>ACK_SAMPLE_THRESHOLD)
       d=1;
+    delayMicroseconds(ACK_DELAY);
   }
     
   if(d==0)    // verify unsuccessful
@@ -376,9 +379,10 @@ void RegisterList::writeCVBit(char *s) volatile{
   loadPacket(0,resetPacket,2,1);          // forces code to wait until all repeats of bRead are completed (and decoder begins to respond)
     
   for(int j=0;j<ACK_SAMPLE_COUNT;j++){
-    c=(analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
+    c=((float) analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
     if(c>ACK_SAMPLE_THRESHOLD)
       d=1;
+    delayMicroseconds(ACK_DELAY);
   }
     
   if(d==0)    // verify unsuccessful

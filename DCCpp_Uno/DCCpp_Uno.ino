@@ -177,6 +177,11 @@ DCC++ BASE STATION is configured through the Config.h file that contains all use
 #include "EEStore.h"
 #include "Config.h"
 #include "Comm.h"
+#include "RCom.h"
+
+#if defined ARDUINO_SAM_DUE   //  conditional includes for AVR (internal EEPROM) vs.ARM (external EEPROM/FRAM) platform
+  #include "DUESupport.h"
+#endif
 
 void showConfiguration();
 
@@ -219,8 +224,24 @@ void loop(){
 
 void setup(){  
 
-  Serial.begin(115200);            // configure serial interface
+  Serial.begin(115200);             // configure serial interface
   Serial.flush();
+  
+  #if defined ARDUINO_SAM_DUE       // Initialize SPI for external memory access
+  
+        // Configure SPI for FRAM support (set parameters in DUESupport.h)
+        pinMode(FRAM_CS_PIN, OUTPUT);
+        digitalWrite(FRAM_CS_PIN, HIGH);
+        SPI.begin(FRAM_CS_PIN);                         // initialize the bus for a device on FRAM_CS_PIN
+        SPI.setClockDivider(FRAM_CS_PIN,FRAM_CLK_DIV);  // set SPI clock divider
+
+        //Set Write Enable
+        digitalWrite(FRAM_CS_PIN, LOW);
+        SPI.transfer(FRAM_CS_PIN, OP_WREN);
+        digitalWrite(FRAM_CS_PIN, HIGH);
+        
+  #endif
+
 
   #ifdef SDCARD_CS
     pinMode(SDCARD_CS,OUTPUT);
@@ -267,124 +288,193 @@ void setup(){
     Serial.print(Ethernet.localIP());
     Serial.print(">");
   #endif
+
+  #ifdef ARDUINO_SAM_DUE
+
+    // CONFIGURE TIMER TC2 channel 2 TO OUTPUT 50% DUTY CYCLE DCC SIGNALS ON TIOB8 INTERRUPT PIN
   
-  // CONFIGURE TIMER_1 TO OUTPUT 50% DUTY CYCLE DCC SIGNALS ON OC1B INTERRUPT PINS
-  
-  // Direction Pin for Motor Shield Channel A - MAIN OPERATIONS TRACK
-  // Controlled by Arduino 16-bit TIMER 1 / OC1B Interrupt Pin
-  // Values for 16-bit OCR1A and OCR1B registers calibrated for 1:1 prescale at 16 MHz clock frequency
-  // Resulting waveforms are 200 microseconds for a ZERO bit and 116 microseconds for a ONE bit with exactly 50% duty cycle
+    // Direction Pin for Motor Shield Channel A - MAIN OPERATIONS TRACK
+    // Controlled by Arduino 32-bit TIMER TC2 channel 2 / TIOB8 Interrupt Pin
+    // Values for 32-bit RB and RC registers calibrated for 1:8 prescale at 84 MHz clock frequency
+    // Resulting waveforms are 200 microseconds for a ZERO bit and 116 microseconds for a ONE bit with exactly 50% duty cycle
 
-  #define DCC_ZERO_BIT_TOTAL_DURATION_TIMER1 3199
-  #define DCC_ZERO_BIT_PULSE_DURATION_TIMER1 1599
+    #define DCC_ZERO_BIT_TOTAL_DURATION 2100
+    #define DCC_ZERO_BIT_PULSE_DURATION 1050
 
-  #define DCC_ONE_BIT_TOTAL_DURATION_TIMER1 1855
-  #define DCC_ONE_BIT_PULSE_DURATION_TIMER1 927
+    #define DCC_ONE_BIT_TOTAL_DURATION 1218
+    #define DCC_ONE_BIT_PULSE_DURATION 609
 
-  pinMode(DIRECTION_MOTOR_CHANNEL_PIN_A,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
-  digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_A,LOW);
+    pinMode(DIRECTION_MOTOR_CHANNEL_PIN_A,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
+    digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_A,LOW);
 
-  pinMode(DCC_SIGNAL_PIN_MAIN, OUTPUT);      // THIS ARDUINO OUPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-A OF MOTOR CHANNEL-A
+    pinMode(DCC_SIGNAL_PIN_MAIN, OUTPUT);              // THIS ARDUINO OUPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-A OF MOTOR CHANNEL-A
 
-  bitSet(TCCR1A,WGM10);     // set Timer 1 to FAST PWM, with TOP=OCR1A
-  bitSet(TCCR1A,WGM11);
-  bitSet(TCCR1B,WGM12);
-  bitSet(TCCR1B,WGM13);
-
-  bitSet(TCCR1A,COM1B1);    // set Timer 1, OC1B (pin 10/UNO, pin 12/MEGA) to inverting toggle (actual direction is arbitrary)
-  bitSet(TCCR1A,COM1B0);
-
-  bitClear(TCCR1B,CS12);    // set Timer 1 prescale=1
-  bitClear(TCCR1B,CS11);
-  bitSet(TCCR1B,CS10);
+    //  Timer for DCC signal - MAIN OPERATIONS TRACK
+    //  prepare and start Timer TC2, channel 2. Pin 12 outputs Timer signal TIOB8
+    prepareTimer(TC2, 2, TC8_IRQn, 1218, 8);                             //TC2 channel 2, the IRQ for that channel and the frequency
+    PIO_Configure(PIOD, PIO_PERIPH_B, PIO_PD8B_TIOB8, PIO_DEFAULT);      //enable output on SAM pin D8 (Pin 12 on DUE board)
     
-  OCR1A=DCC_ONE_BIT_TOTAL_DURATION_TIMER1;
-  OCR1B=DCC_ONE_BIT_PULSE_DURATION_TIMER1;
-  
-  pinMode(SIGNAL_ENABLE_PIN_MAIN,OUTPUT);   // master enable for motor channel A
+    TC8RC=DCC_ONE_BIT_TOTAL_DURATION;
+    TC8RB=DCC_ONE_BIT_PULSE_DURATION;
 
-  mainRegs.loadPacket(1,RegisterList::idlePacket,2,0);    // load idle packet into register 1    
+    pinMode(SIGNAL_ENABLE_PIN_MAIN,OUTPUT);           //  master enable for motor channel A
+
+    pinMode(BRAKE_MOTOR_CHANNEL_PIN_A, OUTPUT);       //  brake pin is used to create the BiDiB cutout
+    digitalWrite(BRAKE_MOTOR_CHANNEL_PIN_A,LOW);      //  initially set to low
+
+    mainRegs.loadPacket(1,RegisterList::idlePacket,2,0);    // load idle packet into register 1    
       
-  bitSet(TIMSK1,OCIE1B);    // enable interrupt vector for Timer 1 Output Compare B Match (OCR1B)    
+    NVIC_EnableIRQ(TC8_IRQn);                         //  Enable TC8 interrupt
+    NVIC_SetPriority(TC8_IRQn, 0);                    //  Set priority (highest)
 
-  // CONFIGURE EITHER TIMER_0 (UNO) OR TIMER_3 (MEGA) TO OUTPUT 50% DUTY CYCLE DCC SIGNALS ON OC0B (UNO) OR OC3B (MEGA) INTERRUPT PINS
+    // CONFIGURE TIMER TC0 channel 0 TO OUTPUT 50% DUTY CYCLE DCC SIGNALS ON TIOB0 INTERRUPT PIN
   
-#ifdef ARDUINO_AVR_UNO      // Configuration for UNO
+    // Directon Pin for Motor Shield Channel B - PROGRAMMING TRACK
+    // Controlled by Arduino 32-bit TIMER TC0 channel 0 / TIOB0 Interrupt Pin
+    // Values for 32-bit RB and RC registers calibrated for 1:8 prescale at 84 MHz clock frequency
+    // Resulting waveforms are 200 microseconds for a ZERO bit and 116 microseconds for a ONE bit with exactly 50% duty cycle
+    
+    pinMode(DIRECTION_MOTOR_CHANNEL_PIN_B,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
+    digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_B,LOW);
+
+    pinMode(DCC_SIGNAL_PIN_PROG,OUTPUT);               // THIS ARDUINO OUTPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-B OF MOTOR CHANNEL-B
+
+    //  Timer for DCC signal - PROGRAMMING TRACK
+    //  prepare and start Timer TC0, channel 0.  Pin 13 outputs Timer signal TIOB0
+    prepareTimer(TC0, 0, TC0_IRQn, 1218, 8);                          //TC0 channel 0, the IRQ for that channel and the desired frequency
+    PIO_Configure(PIOB, PIO_PERIPH_B, PIO_PB27B_TIOB0, PIO_DEFAULT);  //enable output on SAM pin B27 (Pin 13 on DUE board)
+
+    TC0RC=DCC_ONE_BIT_TOTAL_DURATION;
+    TC0RB=DCC_ONE_BIT_PULSE_DURATION;
+ 
   
-  // Directon Pin for Motor Shield Channel B - PROGRAMMING TRACK
-  // Controlled by Arduino 8-bit TIMER 0 / OC0B Interrupt Pin
-  // Values for 8-bit OCR0A and OCR0B registers calibrated for 1:64 prescale at 16 MHz clock frequency
-  // Resulting waveforms are 200 microseconds for a ZERO bit and 116 microseconds for a ONE bit with as-close-as-possible to 50% duty cycle
+    pinMode(SIGNAL_ENABLE_PIN_PROG,OUTPUT);   // master enable for motor channel B
 
-  #define DCC_ZERO_BIT_TOTAL_DURATION_TIMER0 49
-  #define DCC_ZERO_BIT_PULSE_DURATION_TIMER0 24
+    progRegs.loadPacket(1,RegisterList::idlePacket,2,0);    // load idle packet into register 1    
+      
+    NVIC_EnableIRQ(TC0_IRQn);                 //  Enable TC0 interrupt
 
-  #define DCC_ONE_BIT_TOTAL_DURATION_TIMER0 28
-  #define DCC_ONE_BIT_PULSE_DURATION_TIMER0 14
+  #else
   
-  pinMode(DIRECTION_MOTOR_CHANNEL_PIN_B,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
-  digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_B,LOW);
+    // CONFIGURE TIMER_1 TO OUTPUT 50% DUTY CYCLE DCC SIGNALS ON OC1B INTERRUPT PINS
+  
+    // Direction Pin for Motor Shield Channel A - MAIN OPERATIONS TRACK
+    // Controlled by Arduino 16-bit TIMER 1 / OC1B Interrupt Pin
+    // Values for 16-bit OCR1A and OCR1B registers calibrated for 1:1 prescale at 16 MHz clock frequency
+    // Resulting waveforms are 200 microseconds for a ZERO bit and 116 microseconds for a ONE bit with exactly 50% duty cycle
 
-  pinMode(DCC_SIGNAL_PIN_PROG,OUTPUT);      // THIS ARDUINO OUTPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-B OF MOTOR CHANNEL-B
+    #define DCC_ZERO_BIT_TOTAL_DURATION_TIMER1 3199
+    #define DCC_ZERO_BIT_PULSE_DURATION_TIMER1 1599
 
-  bitSet(TCCR0A,WGM00);     // set Timer 0 to FAST PWM, with TOP=OCR0A
-  bitSet(TCCR0A,WGM01);
-  bitSet(TCCR0B,WGM02);
+    #define DCC_ONE_BIT_TOTAL_DURATION_TIMER1 1855
+    #define DCC_ONE_BIT_PULSE_DURATION_TIMER1 927
+
+    pinMode(DIRECTION_MOTOR_CHANNEL_PIN_A,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
+    digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_A,LOW);
+
+    pinMode(DCC_SIGNAL_PIN_MAIN, OUTPUT);      // THIS ARDUINO OUPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-A OF MOTOR CHANNEL-A
+
+    bitSet(TCCR1A,WGM10);     // set Timer 1 to FAST PWM, with TOP=OCR1A
+    bitSet(TCCR1A,WGM11);
+    bitSet(TCCR1B,WGM12);
+    bitSet(TCCR1B,WGM13);
+
+    bitSet(TCCR1A,COM1B1);    // set Timer 1, OC1B (pin 10/UNO, pin 12/MEGA) to inverting toggle (actual direction is arbitrary)
+    bitSet(TCCR1A,COM1B0);
+
+    bitClear(TCCR1B,CS12);    // set Timer 1 prescale=1
+    bitClear(TCCR1B,CS11);
+    bitSet(TCCR1B,CS10);
+    
+    OCR1A=DCC_ONE_BIT_TOTAL_DURATION_TIMER1;
+    OCR1B=DCC_ONE_BIT_PULSE_DURATION_TIMER1;
+  
+    pinMode(SIGNAL_ENABLE_PIN_MAIN,OUTPUT);   // master enable for motor channel A
+
+    mainRegs.loadPacket(1,RegisterList::idlePacket,2,0);    // load idle packet into register 1    
+      
+    bitSet(TIMSK1,OCIE1B);    // enable interrupt vector for Timer 1 Output Compare B Match (OCR1B)    
+
+    // CONFIGURE EITHER TIMER_0 (UNO) OR TIMER_3 (MEGA) TO OUTPUT 50% DUTY CYCLE DCC SIGNALS ON OC0B (UNO) OR OC3B (MEGA) INTERRUPT PINS
+  
+  #ifdef ARDUINO_AVR_UNO      // Configuration for UNO
+  
+    // Directon Pin for Motor Shield Channel B - PROGRAMMING TRACK
+    // Controlled by Arduino 8-bit TIMER 0 / OC0B Interrupt Pin
+    // Values for 8-bit OCR0A and OCR0B registers calibrated for 1:64 prescale at 16 MHz clock frequency
+    // Resulting waveforms are 200 microseconds for a ZERO bit and 116 microseconds for a ONE bit with as-close-as-possible to 50% duty cycle
+
+    #define DCC_ZERO_BIT_TOTAL_DURATION_TIMER0 49
+    #define DCC_ZERO_BIT_PULSE_DURATION_TIMER0 24
+
+    #define DCC_ONE_BIT_TOTAL_DURATION_TIMER0 28
+    #define DCC_ONE_BIT_PULSE_DURATION_TIMER0 14
+  
+    pinMode(DIRECTION_MOTOR_CHANNEL_PIN_B,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
+    digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_B,LOW);
+
+    pinMode(DCC_SIGNAL_PIN_PROG,OUTPUT);      // THIS ARDUINO OUTPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-B OF MOTOR CHANNEL-B
+
+    bitSet(TCCR0A,WGM00);     // set Timer 0 to FAST PWM, with TOP=OCR0A
+    bitSet(TCCR0A,WGM01);
+    bitSet(TCCR0B,WGM02);
      
-  bitSet(TCCR0A,COM0B1);    // set Timer 0, OC0B (pin 5) to inverting toggle (actual direction is arbitrary)
-  bitSet(TCCR0A,COM0B0);
+    bitSet(TCCR0A,COM0B1);    // set Timer 0, OC0B (pin 5) to inverting toggle (actual direction is arbitrary)
+    bitSet(TCCR0A,COM0B0);
 
-  bitClear(TCCR0B,CS02);    // set Timer 0 prescale=64
-  bitSet(TCCR0B,CS01);
-  bitSet(TCCR0B,CS00);
+    bitClear(TCCR0B,CS02);    // set Timer 0 prescale=64
+    bitSet(TCCR0B,CS01);
+    bitSet(TCCR0B,CS00);
     
-  OCR0A=DCC_ONE_BIT_TOTAL_DURATION_TIMER0;
-  OCR0B=DCC_ONE_BIT_PULSE_DURATION_TIMER0;
+    OCR0A=DCC_ONE_BIT_TOTAL_DURATION_TIMER0;
+    OCR0B=DCC_ONE_BIT_PULSE_DURATION_TIMER0;
   
-  pinMode(SIGNAL_ENABLE_PIN_PROG,OUTPUT);   // master enable for motor channel B
+    pinMode(SIGNAL_ENABLE_PIN_PROG,OUTPUT);   // master enable for motor channel B
 
-  progRegs.loadPacket(1,RegisterList::idlePacket,2,0);    // load idle packet into register 1    
+    progRegs.loadPacket(1,RegisterList::idlePacket,2,0);    // load idle packet into register 1    
       
-  bitSet(TIMSK0,OCIE0B);    // enable interrupt vector for Timer 0 Output Compare B Match (OCR0B)
+    bitSet(TIMSK0,OCIE0B);    // enable interrupt vector for Timer 0 Output Compare B Match (OCR0B)
 
-#else      // Configuration for MEGA
+  #else      // Configuration for MEGA
 
-  // Directon Pin for Motor Shield Channel B - PROGRAMMING TRACK
-  // Controlled by Arduino 16-bit TIMER 3 / OC3B Interrupt Pin
-  // Values for 16-bit OCR3A and OCR3B registers calibrated for 1:1 prescale at 16 MHz clock frequency
-  // Resulting waveforms are 200 microseconds for a ZERO bit and 116 microseconds for a ONE bit with exactly 50% duty cycle
+    // Directon Pin for Motor Shield Channel B - PROGRAMMING TRACK
+    // Controlled by Arduino 16-bit TIMER 3 / OC3B Interrupt Pin
+    // Values for 16-bit OCR3A and OCR3B registers calibrated for 1:1 prescale at 16 MHz clock frequency
+    // Resulting waveforms are 200 microseconds for a ZERO bit and 116 microseconds for a ONE bit with exactly 50% duty cycle
 
-  #define DCC_ZERO_BIT_TOTAL_DURATION_TIMER3 3199
-  #define DCC_ZERO_BIT_PULSE_DURATION_TIMER3 1599
+    #define DCC_ZERO_BIT_TOTAL_DURATION_TIMER3 3199
+    #define DCC_ZERO_BIT_PULSE_DURATION_TIMER3 1599
 
-  #define DCC_ONE_BIT_TOTAL_DURATION_TIMER3 1855
-  #define DCC_ONE_BIT_PULSE_DURATION_TIMER3 927
+    #define DCC_ONE_BIT_TOTAL_DURATION_TIMER3 1855
+    #define DCC_ONE_BIT_PULSE_DURATION_TIMER3 927
 
-  pinMode(DIRECTION_MOTOR_CHANNEL_PIN_B,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
-  digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_B,LOW);
+    pinMode(DIRECTION_MOTOR_CHANNEL_PIN_B,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
+    digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_B,LOW);
 
-  pinMode(DCC_SIGNAL_PIN_PROG,OUTPUT);      // THIS ARDUINO OUTPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-B OF MOTOR CHANNEL-B
+    pinMode(DCC_SIGNAL_PIN_PROG,OUTPUT);      // THIS ARDUINO OUTPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-B OF MOTOR CHANNEL-B
 
-  bitSet(TCCR3A,WGM30);     // set Timer 3 to FAST PWM, with TOP=OCR3A
-  bitSet(TCCR3A,WGM31);
-  bitSet(TCCR3B,WGM32);
-  bitSet(TCCR3B,WGM33);
+    bitSet(TCCR3A,WGM30);     // set Timer 3 to FAST PWM, with TOP=OCR3A
+    bitSet(TCCR3A,WGM31);
+    bitSet(TCCR3B,WGM32);
+    bitSet(TCCR3B,WGM33);
 
-  bitSet(TCCR3A,COM3B1);    // set Timer 3, OC3B (pin 2) to inverting toggle (actual direction is arbitrary)
-  bitSet(TCCR3A,COM3B0);
+    bitSet(TCCR3A,COM3B1);    // set Timer 3, OC3B (pin 2) to inverting toggle (actual direction is arbitrary)
+    bitSet(TCCR3A,COM3B0);
 
-  bitClear(TCCR3B,CS32);    // set Timer 3 prescale=1
-  bitClear(TCCR3B,CS31);
-  bitSet(TCCR3B,CS30);
+    bitClear(TCCR3B,CS32);    // set Timer 3 prescale=1
+    bitClear(TCCR3B,CS31);
+    bitSet(TCCR3B,CS30);
     
-  OCR3A=DCC_ONE_BIT_TOTAL_DURATION_TIMER3;
-  OCR3B=DCC_ONE_BIT_PULSE_DURATION_TIMER3;
+    OCR3A=DCC_ONE_BIT_TOTAL_DURATION_TIMER3;
+    OCR3B=DCC_ONE_BIT_PULSE_DURATION_TIMER3;
   
-  pinMode(SIGNAL_ENABLE_PIN_PROG,OUTPUT);   // master enable for motor channel B
+    pinMode(SIGNAL_ENABLE_PIN_PROG,OUTPUT);   // master enable for motor channel B
 
-  progRegs.loadPacket(1,RegisterList::idlePacket,2,0);    // load idle packet into register 1    
+    progRegs.loadPacket(1,RegisterList::idlePacket,2,0);    // load idle packet into register 1    
       
-  bitSet(TIMSK3,OCIE3B);    // enable interrupt vector for Timer 3 Output Compare B Match (OCR3B)    
+    bitSet(TIMSK3,OCIE3B);    // enable interrupt vector for Timer 3 Output Compare B Match (OCR3B)    
+  
+  #endif
   
 #endif
 
@@ -422,15 +512,17 @@ void setup(){
 
 // THE INTERRUPT CODE MACRO:  R=REGISTER LIST (mainRegs or progRegs), and N=TIMER (0 or 1)
 
+#ifndef ARDUINO_SAM_DUE
+
 #define DCC_SIGNAL(R,N) \
   if(R.currentBit==R.currentReg->activePacket->nBits){    /* IF no more bits in this DCC Packet */ \
-    R.currentBit=0;                                       /*   reset current bit pointer and determine which Register and Packet to process next--- */ \   
+    R.currentBit=0;                                       /*   reset current bit pointer and determine which Register and Packet to process next--- */ \
     if(R.nRepeat>0 && R.currentReg==R.reg){               /*   IF current Register is first Register AND should be repeated */ \
       R.nRepeat--;                                        /*     decrement repeat count; result is this same Packet will be repeated */ \
     } else if(R.nextReg!=NULL){                           /*   ELSE IF another Register has been updated */ \
       R.currentReg=R.nextReg;                             /*     update currentReg to nextReg */ \
       R.nextReg=NULL;                                     /*     reset nextReg to NULL */ \
-      R.tempPacket=R.currentReg->activePacket;            /*     flip active and update Packets */ \        
+      R.tempPacket=R.currentReg->activePacket;            /*     flip active and update Packets */ \
       R.currentReg->activePacket=R.currentReg->updatePacket; \
       R.currentReg->updatePacket=R.tempPacket; \
     } else{                                               /*   ELSE simply move to next Register */ \
@@ -446,19 +538,91 @@ void setup(){
   } else{                                                                              /* ELSE it is a ZERO */ \
     OCR ## N ## A=DCC_ZERO_BIT_TOTAL_DURATION_TIMER ## N;                              /*   set OCRA for timer N to full cycle duration of DCC ZERO bit */ \
     OCR ## N ## B=DCC_ZERO_BIT_PULSE_DURATION_TIMER ## N;                              /*   set OCRB for timer N to half cycle duration of DCC ZERO bit */ \
-  }                                                                                    /* END-ELSE */ \ 
-                                                                                       \ 
-  R.currentBit++;                                         /* point to next bit in current Packet */  
+  }                                                                                    /* END-ELSE */ \
+                                                                                       \
+  R.currentBit++;                                         /* point to next bit in current Packet */
+
+#else
+
+// Here comes the version for the DUE. Same general logic, differences in the DUE specific timer counter variables and BiDiB cutout generation.
+
+#define DCC_SIGNAL(R,N)                                     \
+  if(R.currentBit==R.currentReg->activePacket->nBits){    /* IF no more bits in this DCC Packet */ \
+    R.currentBit=0;                                       /*   reset current bit pointer and determine which Register and Packet to process next--- */ \
+    if(R.nRepeat>0 && R.currentReg==R.reg){               /*   IF current Register is first Register AND should be repeated */ \
+      R.nRepeat--;                                        /*     decrement repeat count; result is this same Packet will be repeated */ \
+    } else if(R.nextReg!=NULL){                           /*   ELSE IF another Register has been updated */ \
+      R.currentReg=R.nextReg;                             /*     update currentReg to nextReg */ \
+      R.nextReg=NULL;                                     /*     reset nextReg to NULL */ \
+      R.tempPacket=R.currentReg->activePacket;            /*     flip active and update Packets */ \
+      R.currentReg->activePacket=R.currentReg->updatePacket; \
+      R.currentReg->updatePacket=R.tempPacket;               \
+    } else{                                               /*   ELSE simply move to next Register */ \
+      if(R.currentReg==R.maxLoadedReg)                    /*     BUT IF this is last Register loaded */ \
+        R.currentReg=R.reg;                               /*       first reset currentReg to base Register, THEN */ \
+      R.currentReg++;                                     /*     increment current Register (note this logic causes Register[0] to be skipped when simply cycling through all Registers) */ \
+    }                                                     /*   END-ELSE */ \
+  }                                                       /*   END-IF: currentReg, activePacket, and currentBit should now be properly set to point to next DCC bit */ \
+  if(RC_CUTOUT_ON && N==8)                                /*   BiDiB cutout is active (only main track) */ \
+  {                                                       \
+    switch(R.currentBit)                                  /*   the cutout happens within the time span of bits 1 ... 4 of the preamble */ \
+    {                                                     \
+      case 1:                                             /*   form a short 29 us pulse before the cutout begins */ \
+        TC ## N ## RB=RC_PULSE_DURATION;                  /*   set register RB for timer N to duration of a 29 us pulse */ \
+        TC ## N ## RC=RC_TOTAL_DURATION;                  /*   set register RC for timer N to duration of 464 us (4 one bit wave cycles) */ \
+        TC2->TC_CHANNEL[2].TC_IER=TC_IER_CPBS;            /*   change interrupt to RB compare, so we'll return to the ISR after 29 us (not at the end of the full cycle) */    \
+        TC2->TC_CHANNEL[2].TC_IDR=~TC_IER_CPBS;           \
+        R.currentBit = 2;                                 /*   we are off the regular preamble timing; currentBit is used here just to point to the next event*/ \
+        return;                                           \
+      case 2:                                             /*   this is the moment when the actual cutout starts */ \
+        TC2->TC_CHANNEL[2].TC_IER=TC_IER_CPCS;            /*   change interrupt back to RC compare, next ISR stop in 435 us (after a total of 464 us) */  \
+        TC2->TC_CHANNEL[2].TC_IDR=~TC_IER_CPCS;           \
+        PIOC->PIO_SODR=1<<21;                             /*   set brake signal pin to HIGH to short the main track ouptut. replaces "digitalWrite(BRAKE_MOTOR_CHANNEL_PIN_A,HIGH);"  */ \
+        R.currentBit = 5;                                 \
+        return;                                           \
+      case 5:                                             \
+        PIOC->PIO_CODR=1<<21;                             /*   before entering the preamble at bit number 5, set the brake signal pin LOW again; cutout finished. */ \
+        break;                                            \
+      default:                                            \
+        break;                                            \
+    }                                                     \
+  }                                                       \
+  if(R.currentReg->activePacket->buf[R.currentBit/8] & R.bitMask[R.currentBit%8]){    /* IF bit is a ONE */ \
+    TC ## N ## RB=DCC_ONE_BIT_PULSE_DURATION;                                         /*   set register RB for timer N to half cycle duration of DCC ONE bit */ \
+    TC ## N ## RC=DCC_ONE_BIT_TOTAL_DURATION;                                         /*   set register RC for timer N to full cycle duration of DCC ONE bit */ \
+  } else{                                                                             /* ELSE it is a ZERO */ \
+    TC ## N ## RB=DCC_ZERO_BIT_PULSE_DURATION;                                        /*   set register RB for timer N to half cycle duration of DCC ZERO bit */ \
+    TC ## N ## RC=DCC_ZERO_BIT_TOTAL_DURATION;                                        /*   set register RC for timer N to full cycle duration of DCC ZERO bit */ \
+  }                                                                                   /* END-ELSE */    \
+  R.currentBit++;                                         /* point to next bit in current Packet */
   
+#endif
+
 ///////////////////////////////////////////////////////////////////////////////
 
 // NOW USE THE ABOVE MACRO TO CREATE THE CODE FOR EACH INTERRUPT
+
+#ifdef ARDUINO_SAM_DUE      // Configuration for DUE: TC0 and TC8 interrupt handlers
+
+void TC8_Handler()                  //    set interrupt service for TIOB8 of Timer TC2, channel 2 which flips direction bit of Motor Shield Channel A controlling Main Track
+{
+  uint32_t timerStatus = TC8SR;     //    read timer status register for TC2 channel 2 which resets some timer flags, -> replaces TC_GetStatus(TC2, 2);
+  DCC_SIGNAL(mainRegs,8)
+}
+
+void TC0_Handler()                  //    set interrupt service for TIOB0 of Timer TC0, channel 0 which flips direction bit of Motor Shield Channel B controlling Prog Track
+{
+  uint32_t timerStatus = TC0SR;     //    read timer status register for TC0 channel 0 which resets some timer flags, -> replaces TC_GetStatus(TC0, 0);
+  DCC_SIGNAL(progRegs,0)
+}
+
+#else
 
 ISR(TIMER1_COMPB_vect){              // set interrupt service for OCR1B of TIMER-1 which flips direction bit of Motor Shield Channel A controlling Main Track
   DCC_SIGNAL(mainRegs,1)
 }
 
-#ifdef ARDUINO_AVR_UNO      // Configuration for UNO
+#ifdef ARDUINO_AVR_UNO               // Configuration for UNO
 
 ISR(TIMER0_COMPB_vect){              // set interrupt service for OCR1B of TIMER-0 which flips direction bit of Motor Shield Channel B controlling Prog Track
   DCC_SIGNAL(progRegs,0)
@@ -471,7 +635,7 @@ ISR(TIMER3_COMPB_vect){              // set interrupt service for OCR3B of TIMER
 }
 
 #endif
-
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////
 // PRINT CONFIGURATION INFO TO SERIAL PORT REGARDLESS OF INTERFACE TYPE
@@ -557,7 +721,3 @@ void showConfiguration(){
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-
-
-
-

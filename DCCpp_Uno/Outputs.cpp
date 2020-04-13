@@ -75,7 +75,12 @@ the state of any outputs being monitored or controlled by a separate interface o
 #include "SerialCommand.h"
 #include "DCCpp_Uno.h"
 #include "EEStore.h"
-#include <EEPROM.h>
+#ifdef ARDUINO_SAM_DUE
+  #include "DUESupport.h"
+#else
+  #include <EEPROM.h>
+#endif
+
 #include "Comm.h"
 
 ///////////////////////////////////////////////////////////////////////////////

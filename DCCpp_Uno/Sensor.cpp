@@ -58,7 +58,12 @@ decide to ignore the <q ID> return and only react to <Q ID> triggers.
 #include "DCCpp_Uno.h"
 #include "Sensor.h"
 #include "EEStore.h"
-#include <EEPROM.h>
+#ifdef ARDUINO_SAM_DUE
+  #include "DUESupport.h"
+#else
+  #include <EEPROM.h>
+#endif
+
 #include "Comm.h"
 
 ///////////////////////////////////////////////////////////////////////////////

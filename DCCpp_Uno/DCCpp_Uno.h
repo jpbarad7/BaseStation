@@ -46,9 +46,16 @@ Part of DCC++ BASE STATION for the Arduino
   #define DCC_SIGNAL_PIN_MAIN 12          // Arduino Mega - uses OC1B
   #define DCC_SIGNAL_PIN_PROG 2           // Arduino Mega - uses OC3B
 
+#elif defined ARDUINO_SAM_DUE
+
+  #define ARDUINO_TYPE    "DUE"
+
+  #define DCC_SIGNAL_PIN_MAIN 12          // Ardunio Due  - uses TIOB8
+  #define DCC_SIGNAL_PIN_PROG 13          // Arduino Due  - uses TIOB0
+
 #else
 
-  #error CANNOT COMPILE - DCC++ ONLY WORKS WITH AN ARDUINO UNO OR AN ARDUINO MEGA 1280/2560
+  #error CANNOT COMPILE - DCC++ ONLY WORKS WITH AN ARDUINO UNO OR AN ARDUINO MEGA 1280/2560 OR AN ARDUINO DUE
 
 #endif
 
@@ -68,6 +75,11 @@ Part of DCC++ BASE STATION for the Arduino
 
   #define DIRECTION_MOTOR_CHANNEL_PIN_A 12
   #define DIRECTION_MOTOR_CHANNEL_PIN_B 13
+
+  #define BRAKE_MOTOR_CHANNEL_PIN_A 9
+  #define BRAKE_MOTOR_CHANNEL_PIN_B 8
+
+  
 
 #elif MOTOR_SHIELD_TYPE == 1
 

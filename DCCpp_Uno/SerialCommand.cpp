@@ -22,7 +22,11 @@ Part of DCC++ BASE STATION for the Arduino
 #include "EEStore.h"
 #include "Comm.h"
 
-extern int __heap_start, *__brkval;
+#ifdef ARDUINO_SAM_DUE
+  extern "C" char *sbrk(int incr);
+#else
+  extern int __heap_start, *__brkval;
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -453,6 +457,13 @@ void SerialCommand::parse(char *com){
 
     Serial.println("\nEntering Diagnostic Mode...");
     delay(1000);
+
+    #ifdef ARDUINO_SAM_DUE      // Configuration for DUE
+
+     TC_Configure(TC2, 2, TC_CMR_TCCLKS_TIMER_CLOCK4); // change prescale factor from 8 to 128 (main track),         SLOWS NORMAL SPEED BY A FACTOR OF 16
+     TC_Configure(TC0, 0, TC_CMR_TCCLKS_TIMER_CLOCK4); // change prescale factor from 8 to 128 (programming track),  SLOWS NORMAL SPEED BY A FACTOR OF 16
+
+    #else
     
     bitClear(TCCR1B,CS12);    // set Timer 1 prescale=8 - SLOWS NORMAL SPEED BY FACTOR OF 8
     bitSet(TCCR1B,CS11);
@@ -475,6 +486,7 @@ void SerialCommand::parse(char *com){
     CLKPR=0x80;           // THIS SLOWS DOWN SYSYEM CLOCK BY FACTOR OF 256
     CLKPR=0x08;           // BOARD MUST BE RESET TO RESUME NORMAL OPERATIONS
 
+    #endif
     break;
 
 /***** WRITE A DCC PACKET TO ONE OF THE REGSITERS DRIVING THE MAIN OPERATIONS TRACK  ****/    
@@ -526,9 +538,14 @@ void SerialCommand::parse(char *com){
  *     returns: <f MEM>
  *     where MEM is the number of free bytes remaining in the Arduino's SRAM
  */
-      int v; 
+      int  v;
+      char t;
       INTERFACE.print("<f");
-      INTERFACE.print((int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval));
+      #ifdef ARDUINO_SAM_DUE
+        INTERFACE.print(&t - reinterpret_cast<char*>(sbrk(0)));
+      #else
+        INTERFACE.print((int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval));
+      #endif
       INTERFACE.print(">");
       break;
 
@@ -567,5 +584,3 @@ void SerialCommand::parse(char *com){
 }; // SerialCommand::parse
 
 ///////////////////////////////////////////////////////////////////////////////
-
-
